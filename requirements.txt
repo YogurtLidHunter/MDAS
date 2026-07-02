@@ -1,0 +1,10 @@
+torch>=2.0.0
+torchvision
+ultralytics>=8.4.84
+openvino>=2024.0.0
+streamlit>=1.30.0
+opencv-python>=4.8.0
+numpy>=1.26.0
+Pillow>=10.2.0
+matplotlib
+seaborn
