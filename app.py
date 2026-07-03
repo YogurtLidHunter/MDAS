@@ -2,6 +2,7 @@ import streamlit as st
 import cv2
 import time
 import tempfile
+import os
 import numpy as np
 from collections import deque, defaultdict
 from ultralytics import YOLO
@@ -153,18 +154,48 @@ if "is_playing" not in st.session_state: st.session_state.is_playing = False
 if "total_frames" not in st.session_state: st.session_state.total_frames = 0
 if "video_fps" not in st.session_state: st.session_state.video_fps = 30
 if "history" not in st.session_state: st.session_state.history = defaultdict(lambda: deque(maxlen=HISTORY_LEN))
+if "last_video_source" not in st.session_state: st.session_state.last_video_source = None
 
 def main():
     with st.sidebar:
         st.header("시스템 설정")
         conf_thres = st.slider("탐지 임계값 (Confidence)", 0.0, 1.0, 0.6, 0.05)
         st.markdown("---")
+        
+        # 비디오 소스 선택 라디오 버튼
+        st.header("📹 비디오 소스 선택")
+        video_source = st.radio(
+            "테스트 영상을 선택하세요:",
+            ("직접 업로드", "샘플 영상: 해파리", "샘플 영상: 상어", "샘플 영상: 복합")
+        )
 
     st.title("수중 위험 감지 시스템 (OpenVINO 가속)")
     
-    uploaded_video = st.file_uploader("분석할 영상을 업로드하십시오.", type=["mp4", "avi", "mov"])
+    video_path = None
 
-    if uploaded_video is not None:
+    # 사용자의 소스 선택에 따른 경로 할당
+    if video_source == "직접 업로드":
+        uploaded_video = st.file_uploader("분석할 영상을 업로드하십시오.", type=["mp4", "avi", "mov"])
+        if uploaded_video is not None:
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            tfile.write(uploaded_video.read())
+            tfile.close()
+            video_path = tfile.name
+    else:
+        sample_map = {
+            "샘플 영상: 해파리": "samples/sample_jellyfish.mp4",
+            "샘플 영상: 상어": "samples/sample_shark.mp4",
+            "샘플 영상: 다이버 뷰": "samples/sample_diver.mp4"
+        }
+        selected_sample = sample_map[video_source]
+        if os.path.exists(selected_sample):
+            video_path = selected_sample
+            st.info(f"✅ 기본 샘플 영상이 로드되었습니다: {video_source}")
+        else:
+            st.error(f"샘플 영상 파일을 찾을 수 없습니다. (경로: {selected_sample})")
+
+    # 영상 소스가 선택되었을 때만 분석 실행
+    if video_path is not None:
         try:
             model = load_openvino_model(MODEL_PATH)
             names = model.names
@@ -172,19 +203,20 @@ def main():
             st.error(f"모델 로드 실패. 내부 경로에 best_openvino_model 폴더가 존재하는지 확인하십시오. 에러 내용: {str(e)}")
             return
 
-        if "temp_video_path" not in st.session_state:
-            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            tfile.write(uploaded_video.read())
-            tfile.close()
-            st.session_state.temp_video_path = tfile.name
+        # 비디오 소스가 변경되었을 경우 초기화
+        if st.session_state.last_video_source != video_path:
+            st.session_state.last_video_source = video_path
+            st.session_state.current_frame = 0
+            st.session_state.is_playing = False
+            st.session_state.history.clear()
             
-            cap_init = cv2.VideoCapture(tfile.name)
+            cap_init = cv2.VideoCapture(video_path)
             st.session_state.total_frames = int(cap_init.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap_init.get(cv2.CAP_PROP_FPS)
             st.session_state.video_fps = fps if fps > 0 else 30
             cap_init.release()
 
-        cap = cv2.VideoCapture(st.session_state.temp_video_path)
+        cap = cv2.VideoCapture(video_path)
         
         col1, col2 = st.columns([3, 1])
         
@@ -193,12 +225,12 @@ def main():
             
             # 제어 컨트롤러 배정
             ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns(4)
-            with ctrl_col1: st.button("5초 뒤로", on_click=skip_backward, width="stretch")
+            with ctrl_col1: st.button("5초 뒤로", on_click=skip_backward, use_container_width=True)
             with ctrl_col2: 
                 play_label = "일시정지" if st.session_state.is_playing else "재생"
-                st.button(play_label, on_click=toggle_play, width="stretch")
-            with ctrl_col3: st.button("5초 앞으로", on_click=skip_forward, width="stretch")
-            with ctrl_col4: st.button("처음으로", on_click=go_first, width="stretch")
+                st.button(play_label, on_click=toggle_play, use_container_width=True)
+            with ctrl_col3: st.button("5초 앞으로", on_click=skip_forward, use_container_width=True)
+            with ctrl_col4: st.button("처음으로", on_click=go_first, use_container_width=True)
 
             # 타임라인 제어 슬라이더
             st.slider(
@@ -232,7 +264,7 @@ def main():
                 frame_rgb, lvl, cnt = process_frame(frame, model, names, conf_thres)
                 
                 # 동일 컴포넌트에 바이너리만 인플레이스로 주입하여 드라이브 렉을 최소화합니다.
-                stframe.image(frame_rgb, width="stretch")
+                stframe.image(frame_rgb, use_container_width=True)
                 status_text.markdown(f"""
                 - **현재 위험도 정보:** {lvl}
                 - **감지된 객체 수:** {cnt} 개
@@ -247,7 +279,7 @@ def main():
             ret, frame = cap.read()
             if ret:
                 frame_rgb, lvl, cnt = process_frame(frame, model, names, conf_thres)
-                stframe.image(frame_rgb, width="stretch")
+                stframe.image(frame_rgb, use_container_width=True)
                 status_text.markdown(f"""
                 - **현재 위험도 정보:** {lvl}
                 - **감지된 객체 수:** {cnt} 개
@@ -255,10 +287,6 @@ def main():
                 """)
 
         cap.release()
-
-    elif "temp_video_path" in st.session_state:
-        for key in ["temp_video_path", "current_frame", "is_playing", "total_frames"]:
-            if key in st.session_state: del st.session_state[key]
 
 if __name__ == "__main__":
     main()
